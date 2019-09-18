@@ -492,7 +492,7 @@ class Expression(StackItem):
         return '/* not implemented for %s */' % type(self).__name__
 
     def genlines(self, p):
-        return (self.tocode(p) + ';',)
+        return (str(self.tocode(p)) + ';',)
 
     def put_block(self, p, block):
         block.put(self)
@@ -522,6 +522,8 @@ class Block(Expression):
             self.put(tgt)
             p.create_block(tgt, self.finish)
             return
+
+        if not inst: return
 
         inst.parse_block(p, self)
 
@@ -655,9 +657,13 @@ class Parser(ScriptIO):
         self.top = stacktop
 
         if self.little:
-            pcd = readub(self)
-            if pcd >= 240:
-                pcd = 240 + ((pcd - 240) << 8) + readub(self)
+            try:
+                pcd = readub(self)
+                if pcd >= 240:
+                    pcd = 240 + ((pcd - 240) << 8) + readub(self)
+            except:
+                print('Found EOF Error')
+                return
         else:
             pcd = readui(self)
 
@@ -781,6 +787,7 @@ class ArrayIndex(Expression):
         return (self.arr, self.index)
 
     def tocode(self, p):
+        if not type(self.arr) == MapVar or type(self.index) == StackBottom: return '// %s[%s]'
         return '%s[%s]' % (self.arr.tocode(p), self.index.tocode(p))
 
     @classmethod
@@ -891,6 +898,8 @@ class Assign(Instruction):
         return '%s %s' % (self.pcode.name, self.dest.tocode(None))
 
     def tocode(self, p):
+        if type(self.val) == StackBottom:
+            return '%s %s %s'
         return '%s %s %s' % (self.dest.tocode(p), self.op,
                              self.val.tocode(p))
 
@@ -959,6 +968,7 @@ class BinOperator(Instruction):
         Instruction.parse(self, p)
 
     def tocode(self, p):
+        if not type(self.left) == LocalVar or not type(self.right) == LocalVar: return
         return '(%s %s %s)' % (self.left.tocode(p), self.op,
                                self.right.tocode(p))
 
@@ -1124,21 +1134,34 @@ class IfGoto(Instruction):
         if self.neg:
             ifblock, elsblock = elsblock, ifblock
 
+        if not ifblock:
+            print("[BUG] ifblock is None")
+            return
+
         if ifblock.statements:
+            if type(self.stack) == StackBottom:
+                print("[BUG] self.stack hasn't .tocode method")
+                return
             yield 'if (%s) {' % self.stack.tocode(p)
 
             for l in ifblock.genlines(p):
                 yield '    ' + l
 
-            if elsblock.statements:
-                yield '} else {'
-                for l in elsblock.genlines(p):
-                    yield '    ' + l
+            if type(elsblock) == Block:
+                if elsblock.statements:
+                    yield '} else {'
+                    for l in elsblock.genlines(p):
+                        yield '    ' + l
+            else:
+                print("[BUG] elsblock is not a Block")
             yield '}'
         else:
             yield 'if (!%s) {' % self.stack.tocode(p)
-            for l in elsblock.genlines(p):
-                yield '    ' + l
+            if type(elsblock) == Block:
+                for l in elsblock.genlines(p):
+                    yield '    ' + l
+            else:
+                print("[BUG] elsblock is not a Block")
             yield '}'
 
     def disassemble(self):
@@ -1179,8 +1202,11 @@ class SwitchExpr(Expression):
         yield 'switch (%s) {' % self.switch.tocode(p)
         for c in self.cases:
             yield '    case %d:' % c.case
-            for l in c.block.genlines(p):
-                yield '        %s' % l
+            if type(c.block) == Block:
+                for l in c.block.genlines(p):
+                    yield '        %s' % l
+            else:
+                print("[BUG] c.block is not a Block")
         yield '}'
 
 
@@ -1222,6 +1248,9 @@ class Drop(Instruction):
         Instruction.parse(self, p)
 
     def parse_block(self, p, block):
+        if not type(self.stack) == SwitchExpr:
+            #print("[BUG] Stack is not a SwitchExpr")
+            return
         self.stack.put_block(p, block)
         Instruction.parse_block(self, p, block)
 
@@ -1235,6 +1264,9 @@ class DupInst(Instruction):
 class TagString(Instruction):
     def parse(self, p):
         val = p.pop()
+        if not type(val) == Literal:
+            print("[BUG] p.pop() is not a Literal")
+            return
         p.push(val.lookupstring(p))
         Instruction.parse(self, p)
 
@@ -1256,9 +1288,9 @@ class PrintExpr(Expression):
         return self
 
     def tocode(self, p):
-        itemcode = ', '.join(i.tocode(p) for i in self.items)
+        itemcode = ', '.join(str(i.tocode(p)) for i in self.items)
         if self.optargs is not None:
-            argcode = ', '.join(i.tocode(p) for i in self.optargs)
+            argcode = ', '.join(str(i.tocode(p)) for i in self.optargs)
             return '%s(%s; %s)' % (self.name, itemcode, argcode)
 
         return '%s(%s)' % (self.name, itemcode)
@@ -1394,8 +1426,13 @@ class HudMessage(Instruction):
 
 class Call(Instruction):
     def tocode(self, p):
-        return 'func%d(%s)' % (self.funcnum,
-                               ', '.join(e.tocode(p) for e in self.args))
+        try:
+            exp = 'func%d(%s)' % (self.funcnum,
+                                   ', '.join(e.tocode(p) for e in self.args))
+        except:
+            print("[BUG] [Call::tocode] No .tocode in self.args")
+            pass
+
 
     def parse(self, p, inst_args, wantresult):
         funcnum = inst_args[0]
@@ -1478,10 +1515,14 @@ class ActorPropArgs(ArgumentInterpreter):
 
 class BuiltinCall(Instruction):
     def tocode(self, p):
-        argcode = ', '.join(e.tocode(p) for e in self.args)
-        if self.const:
-            return '%s(const: %s)' % (self.name, argcode)
-        return '%s(%s)' % (self.name, argcode)
+        try:
+            argcode = ', '.join(e.tocode(p) for e in self.args)
+            if self.const:
+                return '%s(const: %s)' % (self.name, argcode)
+            return '%s(%s)' % (self.name, argcode)
+        except:
+            print("[BUG] [BuiltinCall::tocode] No .tocode in self.args")
+            pass
 
     def parse(self, p, args, void, name, interp=default_interp):
         if isinstance(args, int):

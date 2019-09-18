@@ -122,8 +122,11 @@ class GotoParser(acsutil.Parser):
             lbl = self.label_code(tgt)
             if lbl:
                 yield lbl
-            for l in tgt.block.genlines(self):
-                yield self.spaces + l
+            if type(tgt.block) == acsutil.Block:
+                for l in tgt.block.genlines(self):
+                    yield self.spaces + l
+            else:
+                print("[BUG] tgt.block is not a Block")
             yield ''
 
         for l in self.suffix_code():
