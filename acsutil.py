@@ -565,6 +565,8 @@ class Instruction(Expression):
         self.queue_target(p, self.next)
 
     def parse_block(self, p, block):
+        if(not(self.wantresult)):
+            block.put(self)
         p.queue(block.parse, p, self.next)
 
     def disassemble(self):
